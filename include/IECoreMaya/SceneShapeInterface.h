@@ -146,6 +146,7 @@ class SceneShapeInterface: public MPxComponentShape
 		static MObject aQuerySpace;
 		static MObject aSceneQueries;
 		static MObject aAttributeQueries;
+		static MObject aConvertParamQueries;
 		
 		static MObject aAttributeValues;
 		
@@ -208,6 +209,16 @@ class SceneShapeInterface: public MPxComponentShape
 		Imath::Box3d componentBound( int idx );
 
 		void recurseCopyGroup( const IECoreGL::Group *srcGroup, IECoreGL::Group *trgGroup, const std::string &namePrefix );
+
+		/// Read convert parameters.
+		/**
+		Convert paramters are specified by the user in the queryConvertParameters attribute
+		A valid convert parameter format is,
+			-parametername value [value...]
+		Multiple convert paramters can be specified by separating them with spaces.
+		A parametername must start with '-' followed by a non-digit character (so that we allow negative numbers eg. "-10" as values ).
+		**/
+		bool readConvertParams( std::map<std::string, std::string> &convertParams, int index ) const;
 
 		typedef std::map< IECore::InternedString,  std::pair< unsigned int, IECoreGL::GroupPtr> > NameToGroupMap;
 		typedef std::vector< IECore::InternedString > IndexToNameMap;

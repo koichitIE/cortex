@@ -111,6 +111,7 @@ MObject SceneShapeInterface::aTime;
 MObject SceneShapeInterface::aOutTime;
 MObject SceneShapeInterface::aSceneQueries;
 MObject SceneShapeInterface::aAttributeQueries;
+MObject SceneShapeInterface::aConvertParamQueries;
 MObject SceneShapeInterface::aOutputObjects;
 MObject SceneShapeInterface::aObjectDependency;
 MObject SceneShapeInterface::aAttributes;
@@ -292,6 +293,17 @@ MStatus SceneShapeInterface::initialize()
 	tAttr.setIndexMatters( true );
 
 	s = addAttribute( aAttributeQueries );
+
+	aConvertParamQueries = tAttr.create( "queryConvertParameters", "qcp", MFnData::kString, &s );
+	tAttr.setReadable( true );
+	tAttr.setWritable( true );
+	tAttr.setStorable( true );
+	tAttr.setConnectable( true );
+	tAttr.setHidden( false );
+	tAttr.setArray( true );
+	tAttr.setIndexMatters( true );
+
+	s = addAttribute( aConvertParamQueries );
 
 	// Output objects
 	aOutputObjects = gAttr.create( "outObjects", "oob", &s );
@@ -486,6 +498,8 @@ MStatus SceneShapeInterface::initialize()
 	
 	attributeAffects( aAttributeQueries, aAttributes );
 	
+	attributeAffects( aConvertParamQueries, aOutputObjects );
+
 	attributeAffects( aQuerySpace, aTransform );
 	attributeAffects( aQuerySpace, aBound );
 	attributeAffects( aQuerySpace, aOutputObjects );
@@ -1470,3 +1484,81 @@ SceneInterface::Path SceneShapeInterface::fullPathName( std::string relativeName
 	return fullPath;
 }
 
+namespace
+{
+	bool parseConvertParams( std::map<std::string, std::string> &params, const MString &paramsStr )
+	{
+		std::string key = "";
+		bool valueExpected = false;
+
+		const std::string pstr = paramsStr.asChar();
+		boost::tokenizer<boost::char_separator<char> > t( pstr, boost::char_separator<char>( " " ) );
+		boost::tokenizer<boost::char_separator<char> >::const_iterator it, endIt;
+		for ( it = t.begin(), endIt = t.end(); it != endIt; ++it )
+		{
+			const std::string token = *it;
+			if( token == "" )
+			{
+				continue;
+			}
+
+			const char* tokenBuf = token.c_str();
+			if( tokenBuf[0] == '-' && token.length() > 1 && isdigit( tokenBuf[1] ) != EOF )
+			{
+				// Parameter name found.
+				if( valueExpected )
+				{
+					return false;
+				}
+				key = tokenBuf + 1;
+				valueExpected = true;
+			}
+			else
+			{
+				// Value found.
+				if( key == "" )
+				{
+					return false;
+				}
+
+				if( params.count( key ) )
+				{
+					// Concatenate multiple values with spaces.
+					params[ key ] += std::string( " " ) + token;
+				}
+				else
+				{
+					params[ key ] = token;
+				}
+				valueExpected = false;
+			}
+
+		}
+
+		if( key.size() && valueExpected )
+		{
+			return false;
+		}
+
+		return true;
+	}
+
+} // anonymous namespace.
+
+bool SceneShapeInterface::readConvertParams( std::map<std::string, std::string> &convertParams, int index ) const
+{
+	MPlug pConvertParamQueries( thisMObject(), aConvertParamQueries );
+	MPlug pConvertParamQuery = pConvertParamQueries.elementByLogicalIndex( index );
+	MString paramsStr;
+	pConvertParamQuery.getValue( paramsStr );
+
+	bool isParseSuccessful = parseConvertParams( convertParams, paramsStr );
+
+	if( ! isParseSuccessful )
+	{
+		MFnDagNode dag( thisMObject() );
+		msg( Msg::Error, dag.fullPathName().asChar(), boost::format( "Convert paramter parse error. %d" ) % index );
+	}
+
+	return isParseSuccessful;
+}
