@@ -146,6 +146,16 @@ class SceneShapeInterface: public MPxComponentShape
 		static MObject aQuerySpace;
 		static MObject aSceneQueries;
 		static MObject aAttributeQueries;
+		/// Read convert parameters.
+		/**
+		Some ToMaya*Converter take parameters to be used when converting objects.
+		In case of ToMayaCurveConverter, it takes an int parameter "index" that controls which one of curves it should convert to Maya nurbs curve.
+		queryConvertParameters lets you specify some of these paramters.
+		A valid convert parameter format is,
+			-parametername value [value...]
+		Multiple convert paramters can be specified by separating them with spaces.
+		A parametername must start with '-' followed by a non-digit character (so that we allow negative numbers eg. "-10" as values ).
+		**/
 		static MObject aConvertParamQueries;
 		
 		static MObject aAttributeValues;
@@ -210,14 +220,6 @@ class SceneShapeInterface: public MPxComponentShape
 
 		void recurseCopyGroup( const IECoreGL::Group *srcGroup, IECoreGL::Group *trgGroup, const std::string &namePrefix );
 
-		/// Read convert parameters.
-		/**
-		Convert paramters are specified by the user in the queryConvertParameters attribute
-		A valid convert parameter format is,
-			-parametername value [value...]
-		Multiple convert paramters can be specified by separating them with spaces.
-		A parametername must start with '-' followed by a non-digit character (so that we allow negative numbers eg. "-10" as values ).
-		**/
 		bool readConvertParams( std::map<std::string, std::string> &convertParams, int index ) const;
 
 		typedef std::map< IECore::InternedString,  std::pair< unsigned int, IECoreGL::GroupPtr> > NameToGroupMap;

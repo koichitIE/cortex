@@ -54,6 +54,7 @@
 
 #include "IECoreMaya/Convert.h"
 #include "IECoreMaya/ToMayaMeshConverter.h"
+#include "IECoreMaya/ToMayaCurveConverter.h"
 #include "IECoreMaya/MayaTypeIds.h"
 #include "IECoreMaya/PostLoadCallback.h"
 
@@ -824,6 +825,34 @@ MStatus SceneShapeInterface::compute( const MPlug &plug, MDataBlock &dataBlock )
 					{
 						MFnNurbsCurveData fnData;
 						data = fnData.create();
+
+						// If "index" convert paramter is specified, it determines which one of the curves to output in the Curves primitive.
+						std::map<std::string, std::string> convertParams;
+						bool isParamsRead = readConvertParams( convertParams, index );
+						if( ! isParamsRead )
+						{
+							return MS::kFailure;
+						}
+
+						if( convertParams.count( "index" ) )
+						{
+							ToMayaCurveConverter *curveConverter = runTimeCast<ToMayaCurveConverter>( converter.get() );
+							if( curveConverter )
+							{
+								int curveId;
+								try
+								{
+									curveId = boost::lexical_cast<int>( convertParams[ "index" ] );
+								}
+								catch( boost::bad_lexical_cast const& )
+								{
+									MFnDagNode dag( thisMObject() );
+									msg( Msg::Error, dag.fullPathName().asChar(), boost::format( "'index' paramter parse error. %d" ) % index );
+									return MS::kFailure;
+								}
+								curveConverter->indexParameter()->setNumericValue( curveId );
+							}
+						}
 					}
 
 					if( !data.isNull() )
