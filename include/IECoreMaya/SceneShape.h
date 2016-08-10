@@ -100,6 +100,8 @@ class SceneShape : public SceneShapeInterface
 		static IECore::ConstObjectPtr readSceneShapeAttribute( const MDagPath &p, IECore::SceneInterface::Name attributeName );
 		static bool hasTag( const MDagPath &p, const IECore::SceneInterface::Name &tag, int filter );
 		static void readTags( const MDagPath &p, IECore::SceneInterface::NameList &tags, int filter );
+		static bool hasMergeableObjects( const MDagPath &p );
+		static IECore::ConstObjectPtr readMergedObject( const MDagPath &p );
 
 };
 

@@ -34,16 +34,23 @@
 
 #include "IECore/SharedSceneInterfaces.h"
 #include "IECore/LinkedScene.h"
+#include "IECore/CurvesMergeOp.h"
+#include "IECore/MeshMergeOp.h"
+#include "IECore/MessageHandler.h"
 
 #include "IECoreMaya/SceneShape.h"
 #include "IECoreMaya/LiveScene.h"
 #include "IECoreMaya/MayaTypeIds.h"
+#include "IECoreMaya/MayaTypeIds.h"
+#include "IECoreMaya/FromMayaCurveConverter.h"
+#include "IECoreMaya/FromMayaMeshConverter.h"
 
 #include "maya/MFnTypedAttribute.h"
 #include "maya/MFnStringData.h"
 #include "maya/MPlugArray.h"
 #include "maya/MFnDagNode.h"
 #include "maya/MTime.h"
+#include "maya/MObjectArray.h"
 
 using namespace IECore;
 using namespace IECoreMaya;
@@ -58,6 +65,8 @@ SceneShape::LiveSceneAddOn SceneShape::g_liveSceneAddon;
 SceneShape::LiveSceneAddOn::LiveSceneAddOn()
 {
 	LiveScene::registerCustomObject( SceneShape::hasSceneShapeObject, SceneShape::readSceneShapeObject );
+	// todo: Can it be a LiveScene.cpp default? It's a bit weird to register it here.
+	LiveScene::registerCustomObject( SceneShape::hasMergeableObjects, SceneShape::readMergedObject );
 	LiveScene::registerCustomAttributes( SceneShape::sceneShapeAttributeNames, SceneShape::readSceneShapeAttribute );
 	LiveScene::registerCustomTags( SceneShape::hasTag, SceneShape::readTags );
 }
@@ -378,6 +387,184 @@ ConstObjectPtr SceneShape::readSceneShapeObject( const MDagPath &p )
 	pTime.getValue( time );
 	double t = time.as( MTime::kSeconds );
 	return sceneShape->getSceneInterface()->readObject( t );
+}
+
+namespace
+{
+
+template<int MFnType>
+struct PrimMergerTraits;
+
+template<>
+struct PrimMergerTraits<MFn::kNurbsCurve>
+{
+	typedef FromMayaCurveConverter ConverterType;
+	typedef CurvesMergeOp MergeOpType;
+	static CurvesPrimitiveParameter * primParameter( MergeOpType* mop )
+	{
+		return mop->curvesParameter();
+	}
+};
+
+template<>
+struct PrimMergerTraits<MFn::kMesh>
+{
+	typedef FromMayaMeshConverter ConverterType;
+	typedef MeshMergeOp MergeOpType;
+	static MeshPrimitiveParameter * primParameter( MergeOpType* mop )
+	{
+		return mop->meshParameter();
+	}
+};
+
+template<int MFnType>
+class PrimMerger
+{
+		typedef typename PrimMergerTraits<MFnType>::ConverterType ConverterType;
+		typedef typename PrimMergerTraits<MFnType>::MergeOpType MergeOpType;
+		typedef typename MergeOpType::PrimitiveType PrimitiveType;
+
+	public:
+
+		static void createMergeOp( MDagPath &childDag, IECore::ModifyOpPtr &op )
+		{
+			typename ConverterType::Ptr converter = runTimeCast<ConverterType>( ConverterType::create( childDag ) );
+			if( ! converter )
+			{
+				throw Exception( ( boost::format( "Creating merge op failed! " ) % childDag.fullPathName().asChar() ).str() );
+			}
+			typename PrimitiveType::Ptr cprim = runTimeCast<PrimitiveType>( converter->convert() );
+			op = new MergeOpType;
+			op->copyParameter()->setTypedValue( false );
+			op->inputParameter()->setValue( cprim );
+		}
+
+		static void mergePrim( MDagPath &childDag, IECore::ModifyOpPtr &op )
+		{
+			typename ConverterType::Ptr converter = runTimeCast<ConverterType>( ConverterType::create( childDag ) );
+			if( ! converter )
+			{
+				throw Exception( ( boost::format( "Merging primitive failed! " ) % childDag.fullPathName().asChar() ).str() );
+			}
+			typename PrimitiveType::Ptr prim = runTimeCast<PrimitiveType>( converter->convert() );
+			MergeOpType *mop = runTimeCast<MergeOpType>( op.get() );
+			PrimMergerTraits<MFnType>::primParameter( mop )->setValue( const_cast<PrimitiveType*>( prim.get() ) );
+			op->operate();
+		}
+
+};
+
+} // anonymous namespace.
+
+bool SceneShape::hasMergeableObjects( const MDagPath &p )
+{
+	// When there are multiple child shapes that can be merged, readMergedObject() returns an object that has all the shapes merged in it.
+	// This is because multiple Maya shapes can be converted to one IECore primitive eg. nurbs curves -> IECore::CurvesPrimitive.
+	// We want to have multiple shape nodes in Maya, and want it to be one primitive if viewed through IECoreMaya::LiveScene.
+	unsigned int childCount = p.childCount();
+
+	// At least two shapes need to exist to merge.
+	if( childCount < 2 )
+	{
+		return MFn::kInvalid;
+	}
+
+	MFn::Type foundType = MFn::kInvalid;
+	for ( unsigned int c = 0; c < childCount; c++ )
+	{
+		MObject childObject = p.child( c );
+		MFn::Type type = childObject.apiType();
+
+		if( type == MFn::kMesh || type == MFn::kNurbsCurve )
+		{
+			if( MFnDagNode( childObject ).isIntermediateObject() )
+			{
+				continue;
+			}
+
+			if( foundType == MFn::kInvalid )
+			{
+				foundType = type;
+			}
+			else if( foundType == type )
+			{
+				// Found a mergeable shape with the same type as before.
+				return true;
+			}
+		}
+	}
+
+	return false;
+
+}
+
+ConstObjectPtr SceneShape::readMergedObject( const MDagPath &p )
+{
+	unsigned int childCount = p.childCount();
+
+	IECore::ModifyOpPtr op;
+	MFn::Type foundType = MFn::kInvalid;
+
+	bool hasWarned = false;
+	for ( unsigned int c = 0; c < childCount; c++ )
+	{
+		MObject childObject = p.child( c );
+		MFn::Type type = childObject.apiType();
+
+		if( type != MFn::kNurbsCurve && type != MFn::kMesh )
+		{
+			continue;
+		}
+
+		MFnDagNode fnChildDag( childObject );
+		if( fnChildDag.isIntermediateObject() )
+		{
+			continue;
+		}
+
+		MDagPath childDag;
+		fnChildDag.getPath( childDag );
+
+		if( foundType == MFn::kInvalid )
+		{
+			foundType = type;
+
+			if( type == MFn::kNurbsCurve )
+			{
+				PrimMerger<MFn::kNurbsCurve>::createMergeOp( childDag, op );
+			}
+			else
+			{
+				PrimMerger<MFn::kMesh>::createMergeOp( childDag, op );
+			}
+
+		}
+		else if( type == foundType )
+		{
+
+			if( type == MFn::kNurbsCurve )
+			{
+				PrimMerger<MFn::kNurbsCurve>::mergePrim( childDag, op );
+			}
+			else
+			{
+				PrimMerger<MFn::kMesh>::mergePrim( childDag, op );
+			}
+
+		}
+		else
+		{
+			if( ! hasWarned )
+			{
+				hasWarned = true;
+				msg( Msg::Warning, childDag.fullPathName().asChar(), "Ignored, shape type is different from a sibling node and cannot merge (warned only once)." );
+			}
+		}
+
+	}
+
+	assert( op );
+	return op->inputParameter()->getValue();
 }
 
 bool SceneShape::hasTag( const MDagPath &p, const SceneInterface::Name &tag, int filter )
