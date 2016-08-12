@@ -426,7 +426,19 @@ def __expandAll( sceneShapes, *unused ) :
 
 ## Recursively expand the scene shapes and converts objects to geometry
 def __expandAsGeometry( sceneShapes, *unused ) :
-	
+
+	count = 0
+
+	for sceneShape in sceneShapes:
+		fnS = IECoreMaya.FnSceneShape( sceneShape )
+		count += fnS.countAllGeometriesIfConverted()
+
+	if count >= 1000:
+		msg = "%d shapes can be created. Would you like to convert them all?" % count
+		result = maya.cmds.confirmDialog( title="Confirm", message=msg, button=[ "Yes","No" ], defaultButton="Yes", cancelButton="No", dismissString="No" )
+		if result != "Yes":
+			return
+
 	for sceneShape in sceneShapes:
 		fnS = IECoreMaya.FnSceneShape( sceneShape )
 		fnS.convertAllToGeometry()

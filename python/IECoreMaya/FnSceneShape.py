@@ -482,6 +482,30 @@ class FnSceneShape( maya.OpenMaya.MFnDagNode ) :
 
 		return result
 	
+	## Count the number of geometries to be created if convertAllToGeometry() gets called.
+	# The primary use case is to be used to warn the user that the conversion could take long so it doesn't check if the shapes already exist.
+	def countAllGeometriesIfConverted( self ) :
+		scene = IECore.LinkedScene( self.sceneInterface() )
+		return FnSceneShape.__countAllGeometriesIfConverted( scene, 0 )
+
+	@staticmethod
+	def __countAllGeometriesIfConverted( scene, count ) :
+
+		tags = scene.readTags( IECore.SceneInterface.LocalTag )
+
+		if "ObjectType:MeshPrimitive" in tags:
+			count += 1
+		elif "ObjectType:CoordinateSystem" in tags:
+			count += 1
+		elif "ObjectType:CurvesPrimitive" in tags:
+			count += scene.readObject( 0.0 ).numCurves()
+
+		for childName in scene.childNames():
+			child = scene.child( childName )
+			count = FnSceneShape.__countAllGeometriesIfConverted( child, count )
+
+		return count
+
 	## Recursively converts all objects in the scene interface to compatible maya geometry
 	# All scene shape nodes in the hierarchy are turned into an intermediate object.
 	def convertAllToGeometry( self ) :
