@@ -180,9 +180,72 @@ class FnSceneShape( maya.OpenMaya.MFnDagNode ) :
 		# if already collapsed, objectOnly is off
 		return maya.cmds.getAttr( self.fullPathName()+".objectOnly" )
 
-	## Returns the index in the queryPaths which matches the given path.
+	## Returns a dict which keys are paramter names and values are the parameter values. Value types are always str.
+	def __readConvertParams( self, index ):
+
+		def showWarning():
+			maya.cmds.warning( "Convert prameter parse failed %s.queryConvertParameters[%d]" % ( self.fullPathName(), index) )
+
+		queryConvertParameters = self.findPlug( "queryConvertParameters" )
+		convertParamIndices = maya.OpenMaya.MIntArray()
+		queryConvertParameters.getExistingArrayAttributeIndices( convertParamIndices )
+
+		if not index in convertParamIndices:
+			return {}
+
+		paramsStr = queryConvertParameters.elementByLogicalIndex( index ).asString()
+
+		result = {}
+
+		key = ""
+		valueExpected = False
+
+		for token in paramsStr.split( " " ):
+
+			if not token:
+				continue
+
+			if token.startswith( "-" ) and len( token ) > 1 and ( not token[ 1 ].isdigit() ):
+				# Parameter name found.
+				if valueExpected:
+					showWarning()
+
+				key = token[ 1: ]
+				valueExpected = True
+
+			else:
+				# Value found.
+				if not key:
+					showWarning()
+					continue
+
+				if key in result:
+					result[ key ] += " " + token
+				else:
+					result[ key ] = token
+
+				valueExpected = False
+
+		if key and valueExpected:
+			showWarning()
+
+		return result
+
+	## Set convert parameters given a dict { paramterName : value }.
+	def __setConvertParams( self, index, convertParams ):
+
+		tokens = []
+		for name, value in convertParams.items():
+			tokens.append( "-" + name )
+			tokens.append( str( value ) )
+		paramsStr = " ".join( tokens )
+
+		queryConvertParameters = self.findPlug( "queryConvertParameters" )
+		queryConvertParameters.elementByLogicalIndex( index ).setString( paramsStr )
+
+	## Returns the index in the queryPaths which matches the given path, and optionally maches the given convert parameters.
 	# If the path isn't already in the queries, add it and return the new index.
-	def __queryIndexForPath( self, path ):
+	def __queryIndexForPath( self, path, convertParams={} ):
 
 		queryPaths = self.findPlug( "queryPaths" )
 		validIndices = maya.OpenMaya.MIntArray()
@@ -190,11 +253,40 @@ class FnSceneShape( maya.OpenMaya.MFnDagNode ) :
 		for i in validIndices:
 			# Check if we can reuse a query path
 			if queryPaths.elementByLogicalIndex( i ).asString() == path :
-				return i
+
+				if not convertParams:
+					return i
+
+				paramsDict = self.__readConvertParams( i )
+				for name, value in convertParams.items():
+					if paramsDict.get( name, '' ) != str( value ):
+						break
+				else:
+					return i
 
 		# Didn't find path, get the next available index
-		index = max(validIndices) + 1 if validIndices else 0
+		return self.__createQueryPath( path, convertParams )
+
+	## Create a new element to queryPaths and queryConvertParameters, set the given path and convertParams respectively.
+	# convertParams is a dict which keys are paramter names and values are the parameter values.
+	# It returns the new index.
+	def __createQueryPath( self, path, convertParams={} ):
+		queryPaths = self.findPlug( "queryPaths" )
+		validIndices = maya.OpenMaya.MIntArray()
+		queryPaths.getExistingArrayAttributeIndices( validIndices )
+
+		queryConvertParameters = self.findPlug( "queryConvertParameters" )
+		convertParamIndices = maya.OpenMaya.MIntArray()
+		queryConvertParameters.getExistingArrayAttributeIndices( convertParamIndices )
+
+		indices = set( validIndices ).union( set( convertParamIndices ) )
+		indices.add( -1 )
+		index = max( indices ) + 1
+
 		queryPaths.elementByLogicalIndex( index ).setString( path )
+
+		self.__setConvertParams( index, convertParams )
+
 		return index
 	
 	## create the given child for the scene shape
@@ -426,57 +518,68 @@ class FnSceneShape( maya.OpenMaya.MFnDagNode ) :
 			dag.pop()
 			transformNode = dag.fullPathName()
 
-		type, plug = self.__mayaCompatibleShapeAndPlug()
-		if not (type and plug):
+		type, plugStr = self.__mayaCompatibleShapeAndPlug()
+		if not (type and plugStr):
 			raise Exception, "Scene interface at %s cannot be converted to Maya geometry." % self.sceneInterface().pathAsString()
 		
-		shapeName = IECoreMaya.FnDagNode.defaultShapeName( transformNode )
-		shape = transformNode + "|" + shapeName
-		
-		fnShape = None
-		try :
-			fnShape = maya.OpenMaya.MFnDagNode( IECoreMaya.StringUtil.dagPathFromString( shape ) )
-		except RuntimeError :
-			pass
-		
-		if fnShape and maya.cmds.nodeType( shape ) != type :
-			# Rename existing shape
-			newName = shapeName + "_orig"
-			maya.cmds.rename( shape, newName )
-			IECore.msg( IECore.Msg.Level.Warning, "FnSceneShape.convertObjectToGeometry", "Renaming incompatible shape %s to %s." % shape, newName )
+		numShapes = 1
+		if type == "nurbsCurve":
+			curvesPrimitive = self.sceneInterface().readObject( 0.0 )
+			numShapes = curvesPrimitive.numCurves()
+
+		for id in range( numShapes ):
+
+			nameSuffix = str( id ) if type == "nurbsCurve" else ""
+			shapeName = IECoreMaya.FnDagNode.defaultShapeName( transformNode ) + nameSuffix
+			shape = transformNode + "|" + shapeName
+
 			fnShape = None
+			try :
+				fnShape = maya.OpenMaya.MFnDagNode( IECoreMaya.StringUtil.dagPathFromString( shape ) )
+			except RuntimeError :
+				pass
 
-		if not fnShape :
-			dagMod = maya.OpenMaya.MDagModifier()
-			shapeNode = dagMod.createNode( type, IECoreMaya.StringUtil.dependencyNodeFromString( transformNode ) )
-			dagMod.renameNode( shapeNode, shapeName )
-			dagMod.doIt()
+			if fnShape and maya.cmds.nodeType( shape ) != type :
+				# Rename existing shape
+				newName = shapeName + "_orig"
+				maya.cmds.rename( shape, newName )
+				IECore.msg( IECore.Msg.Level.Warning, "FnSceneShape.convertObjectToGeometry", "Renaming incompatible shape %s to %s." % shape, newName )
+				fnShape = None
+
+			if not fnShape :
+				dagMod = maya.OpenMaya.MDagModifier()
+				shapeNode = dagMod.createNode( type, IECoreMaya.StringUtil.dependencyNodeFromString( transformNode ) )
+				dagMod.renameNode( shapeNode, shapeName )
+				dagMod.doIt()
+
+				fnShape = maya.OpenMaya.MFnDagNode( shapeNode )
+
+				if type == "mesh":
+					maya.cmds.sets(shape, add="initialShadingGroup" )
+
+			plug = fnShape.findPlug( plugStr )
+			if plug.isLocked() :
+				continue
 			
-			fnShape = maya.OpenMaya.MFnDagNode( shapeNode )
+			connections = maya.OpenMaya.MPlugArray()
+			if plug.isConnected() :
+				plug.connectedTo( connections, True, False )
 
-			if type == "mesh":
-				maya.cmds.sets(shape, add="initialShadingGroup" )
+			if not connections.length() :
+				dgMod = maya.OpenMaya.MDGModifier()
+				convertParams = { "index" : id } if type == "nurbsCurve" else {}
+				index = self.__queryIndexForPath( "/", convertParams )
 
-		plug = fnShape.findPlug( plug )
-		if plug.isLocked() :
-			return
-		
-		connections = maya.OpenMaya.MPlugArray()
-		if plug.isConnected() :
-			plug.connectedTo( connections, True, False )
-		
-		if not connections.length() :
-			dgMod = maya.OpenMaya.MDGModifier()
-			dgMod.connect( self.findPlug( "outObjects" ).elementByLogicalIndex( self.__queryIndexForPath( "/" ) ), plug )
-			dgMod.doIt()
-			
-			if type == "mesh":
-				object = self.sceneInterface().readObject(0.0)
-				interpolation = object.interpolation
-				try:
-					IECoreMaya.ToMayaMeshConverter.setMeshInterpolationAttribute( shape, interpolation )
-				except:
-					IECore.msg( IECore.Msg.Level.Warning, "FnSceneShape.convertObjectToGeometry", "Failed to set interpolation on %s." % shape )
+				dgMod.connect( self.findPlug( "outObjects" ).elementByLogicalIndex( index ), plug )
+				dgMod.doIt()
+
+				if type == "mesh":
+					object = self.sceneInterface().readObject(0.0)
+					interpolation = object.interpolation
+					try:
+						IECoreMaya.ToMayaMeshConverter.setMeshInterpolationAttribute( shape, interpolation )
+					except:
+						IECore.msg( IECore.Msg.Level.Warning, "FnSceneShape.convertObjectToGeometry", "Failed to set interpolation on %s." % shape )
 
 	def createLocatorAtTransform( self, path ) :
 		
